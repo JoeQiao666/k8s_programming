@@ -12,10 +12,22 @@ import (
 	cloudstate "github.com/cloudstateio/cloudstate/cloudstate-operator/pkg/apis/v1alpha1"
 	corev1 "k8s.io/api/core/v1"
 	meta_v1 "k8s.io/apimachinery/pkg/apis/meta/v1"
+	"k8s.io/apimachinery/pkg/watch"
 	"k8s.io/client-go/kubernetes"
 	_ "k8s.io/client-go/plugin/pkg/client/auth/gcp"
 	"k8s.io/client-go/tools/clientcmd"
 )
+
+// add MAC_DEBUG_OFF variable as a workaround for lldb existing bug
+var MAC_DEBUG_OFF = true
+var WATCH_TIMEOUT_IN_SECONDS int64 = 30
+
+func checkMacDebugOnEnv() {
+	_, ok := os.LookupEnv("MAC_DEBUG_ON")
+	if ok {
+		MAC_DEBUG_OFF = false
+	}
+}
 
 func createStatefulStore(kubeconfig string) {
 	config, err := clientcmd.BuildConfigFromFlags("", kubeconfig)
@@ -44,15 +56,17 @@ func createStatefulStore(kubeconfig string) {
 	resp, err := statefulstoreClient.Statefulstore("default").Create(statefulstore, ctx)
 	if err != nil {
 		fmt.Printf("error while creating object: %v\n", err)
-	} else {
-		fmt.Printf("object created: %v\n", resp)
+	} else if MAC_DEBUG_OFF {
+		fmt.Printf("object created: %+v\n", resp)
 	}
 
 	obj, err := statefulstoreClient.Statefulstore("default").Get(statefulstore.ObjectMeta.Name, ctx)
 	if err != nil {
 		fmt.Printf("error while getting the object %v\n", err)
 	}
-	fmt.Printf("statefulstore Objects Found: \n%+v\n", obj)
+	if MAC_DEBUG_OFF {
+		fmt.Printf("statefulstore Objects Found: %+v\n", obj)
+	}
 }
 
 func createStatefulService(kubeconfig string) {
@@ -104,15 +118,40 @@ func createStatefulService(kubeconfig string) {
 	resp, err := statefulserviceClient.Statefulservice("default").Create(statefulservice, ctx)
 	if err != nil {
 		fmt.Printf("error while creating object: %v\n", err)
-	} else {
+	} else if MAC_DEBUG_OFF {
 		fmt.Printf("object created: %v\n", resp)
 	}
 
+	// Explore context with timeout to find out a better way for timeout senario
+	var isReady = false
+	watcher, err := statefulserviceClient.Statefulservice("default").Watch(ctx, meta_v1.ListOptions{TimeoutSeconds: &WATCH_TIMEOUT_IN_SECONDS})
+	if err != nil {
+		panic(err.Error())
+	}
+	c := watcher.ResultChan()
+	for event := range c {
+		if event.Type == watch.Error {
+			return
+		}
+		if event.Type == watch.Added || event.Type == watch.Modified {
+			value, ok := event.Object.(*cloudstate.StatefulService)
+			if ok && value.Status.Summary == "Ready" {
+				isReady = true
+				watcher.Stop()
+			}
+		}
+	}
+	if !isReady {
+		fmt.Println("===== stateful service not ready =====")
+		return
+	}
 	obj, err := statefulserviceClient.Statefulservice("default").Get(statefulservice.ObjectMeta.Name, ctx)
 	if err != nil {
 		fmt.Printf("error while getting the object %v\n", err)
 	}
-	fmt.Printf("statefulservice Objects Found: \n%+v\n", obj)
+	if MAC_DEBUG_OFF {
+		fmt.Printf("statefulservice Objects Found: \n%+v\n", obj)
+	}
 }
 
 func getEndpoints(kubeconfig string) {
@@ -129,16 +168,17 @@ func getEndpoints(kubeconfig string) {
 	if err != nil {
 		panic(err.Error())
 	}
-	fmt.Printf("%v\n", eps)
+	if MAC_DEBUG_OFF {
+		fmt.Printf("%v\n", eps)
+	}
 }
 
 func main() {
+	checkMacDebugOnEnv()
 	kubeconfig := filepath.Join(
 		os.Getenv("HOME"), ".kube", "config",
 	)
 	createStatefulStore(kubeconfig)
-	fmt.Println()
 	createStatefulService(kubeconfig)
-	fmt.Println()
 	getEndpoints(kubeconfig)
 }
